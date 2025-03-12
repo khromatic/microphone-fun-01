@@ -1,0 +1,176 @@
+<?php
+// audioProxy.php
+// 1. Allow cross-origin requests (so the audio can be used in your visualizer):
+header("Access-Control-Allow-Origin: *");
+header("Content-Type: audio/mpeg"); // or "audio/webm" depending on what is returned
+
+// 2. Get the video ID from the query string
+if (!isset($_GET['videoId'])) {
+    http_response_code(400);
+    echo "Missing videoId";
+    exit;
+}
+$videoId = escapeshellarg($_GET['videoId']); // sanitize input
+
+// 3. Use youtube-dl or yt-dlp to get a direct audio-only URL
+//    This command returns a URL for the best audio format
+//    The exact parameters may vary depending on your version of yt-dlp or youtube-dl
+//    In this example, we ask for an audio-only format in mp4 or webm
+$cmd = "yt-dlp --no-warnings -f bestaudio --get-url https://www.youtube.com/watch?v={$videoId}";
+$audioUrl = trim(shell_exec($cmd));
+
+if (!$audioUrl) {
+    http_response_code(404);
+    echo "Could not retrieve audio URL";
+    exit;
+}
+
+// 4. Open the remote audio stream and output it
+//    This streams the audio directly to the client
+$fp = fopen($audioUrl, 'rb');
+if (!$fp) {
+    http_response_code(404);
+    echo "Failed to open audio stream";
+    exit;
+}
+
+fpassthru($fp);
+fclose($fp);
+?>
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>3.js Particles with Audio & Voice Control</title>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Include Three.js from a CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+      // ---- Three.js Setup ----
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(
+        75,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000
+      );
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+
+      // Create a simple particle system
+      const particleCount = 1000;
+      const geometry = new THREE.BufferGeometry();
+      const positions = new Float32Array(particleCount * 3);
+
+      // Randomly position particles within a cube
+      for (let i = 0; i < particleCount; i++) {
+        positions[i * 3] = (Math.random() - 0.5) * 50;
+        positions[i * 3 + 1] = (Math.random() - 0.5) * 50;
+        positions[i * 3 + 2] = (Math.random() - 0.5) * 50;
+      }
+      geometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(positions, 3)
+      );
+
+      // Particle material with default color white and size
+      let baseParticleSize = 0.5;
+      const material = new THREE.PointsMaterial({
+        color: 0xffffff,
+        size: baseParticleSize,
+      });
+
+      const particles = new THREE.Points(geometry, material);
+      scene.add(particles);
+
+      camera.position.z = 30;
+
+      // ---- Microphone Audio Setup ----
+      let analyser;
+      navigator.mediaDevices
+        .getUserMedia({ audio: true })
+        .then((stream) => {
+          const audioContext =
+            new (window.AudioContext || window.webkitAudioContext)();
+          const source = audioContext.createMediaStreamSource(stream);
+          analyser = audioContext.createAnalyser();
+          analyser.fftSize = 256; // Lower value for a more responsive feel
+          source.connect(analyser);
+        })
+        .catch((err) => {
+          console.error("Error accessing microphone:", err);
+        });
+
+      // ---- Speech Recognition Setup ----
+      const SpeechRecognition =
+        window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = false;
+        recognition.lang = "en-US";
+
+        recognition.onresult = (event) => {
+          const lastResult = event.results[event.results.length - 1];
+          const colorName = lastResult[0].transcript.trim().toLowerCase();
+          console.log("Recognized color:", colorName);
+          try {
+            // Attempt to update the material color with the recognized color name
+            material.color.set(colorName);
+          } catch (e) {
+            console.warn("Invalid color name:", colorName);
+          }
+        };
+
+        recognition.onerror = (event) => {
+          console.error("Speech recognition error", event);
+        };
+
+        recognition.start();
+      } else {
+        console.warn("Speech recognition not supported in this browser.");
+      }
+
+      // ---- Animation Loop ----
+      function animate() {
+        requestAnimationFrame(animate);
+
+        // Update particle size based on microphone input
+        if (analyser) {
+          const dataArray = new Uint8Array(analyser.frequencyBinCount);
+          analyser.getByteFrequencyData(dataArray);
+
+          // Calculate average amplitude
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            sum += dataArray[i];
+          }
+          const avg = sum / dataArray.length;
+          // Scale the base particle size using the average amplitude
+          material.size = baseParticleSize + avg * 0.05;
+        }
+
+        // Optional: Slowly rotate the particle system for added effect
+        particles.rotation.y += 0.001;
+
+        renderer.render(scene, camera);
+      }
+      animate();
+
+      // Handle window resizing
+      window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+    </script>
+  </body>
+</html>
